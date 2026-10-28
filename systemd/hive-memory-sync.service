@@ -1,0 +1,25 @@
+# Obsidian Sync client for the shared agent memory vault.
+#
+# Runs as root because it writes into every agent's 0700 folder. HOME is set
+# explicitly: the client stores its credentials and vault registration under
+# $XDG_CONFIG_HOME or $HOME/.config, and systemd does not set HOME for system
+# services, so without this it would look in / and appear logged out.
+#
+# Not enabled by tools/hive-memory-setup. It needs `ob login` and `ob sync-setup`
+# to have run first, otherwise it restart-loops.
+
+[Unit]
+Description=Obsidian Sync for the hive memory vault
+Documentation=https://github.com/paulmona/hive/blob/main/tools/MEMORY-INSTALL.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=HOME=/root
+ExecStart=/usr/bin/ob sync --path /srv/hive-memory --continuous
+Restart=always
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

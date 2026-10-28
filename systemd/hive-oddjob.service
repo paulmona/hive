@@ -1,0 +1,40 @@
+[Unit]
+Description=Hive Agent: oddjob
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=oddjob
+Group=oddjob
+WorkingDirectory=/home/oddjob
+ExecStart=/usr/bin/tmux new-session -d -s claude /home/oddjob/start-agent.sh
+ExecStop=/usr/bin/tmux kill-session -t claude
+Restart=on-failure
+RestartSec=15
+
+# chrome-start defaults its profile to /home/agent/chrome-profile, the path it
+# had inside the Unraid image. Nothing on this host is called /home/agent, so
+# the default would silently create an empty profile and every one of Paul's
+# logged-in sessions would appear to have evaporated. Set it explicitly.
+Environment=CHROME_USER_DATA_DIR=/home/oddjob/chrome-profile
+Environment=CHROME_DISPLAY=:99
+Environment=CHROME_CDP_PORT=9222
+
+# Higher than Sunday's 4G because a headful Chrome with a dozen renderer
+# processes lives inside this cgroup alongside the agent. CPUQuota keeps a
+# runaway page from starving Sunday and Friday on the same 4 vCPU host.
+MemoryMax=6G
+CPUQuota=200%
+
+# Oddjob does not administer the host, so like hive-sunday there is no
+# sudo.conf drop-in and this stays in force.
+NoNewPrivileges=true
+
+# PrivateTmp is deliberately NOT set. Xvfb's socket lives in /tmp/.X11-unix and
+# chrome-start walks /proc to decide whether a display is already up; both work
+# inside a private /tmp, but so does a stale socket surviving a restart, and
+# debugging that once was enough. Leave /tmp shared and visible.
+
+[Install]
+WantedBy=multi-user.target

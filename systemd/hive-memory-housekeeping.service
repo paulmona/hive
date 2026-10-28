@@ -1,0 +1,11 @@
+# Hands each agent's vault folder back to that agent after Obsidian Sync has
+# written to it as root, then commits the vault to local git history.
+# Triggered by hive-memory-housekeeping.timer; not meant to be enabled directly.
+
+[Unit]
+Description=Reclaim hive memory folder ownership and commit history
+Documentation=https://github.com/paulmona/hive/blob/main/tools/MEMORY-INSTALL.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/hive-memory-housekeeping

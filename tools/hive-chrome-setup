@@ -1,0 +1,98 @@
+#!/bin/bash
+# Install the browser stack Oddjob needs on the hive VM: Google Chrome, an Xvfb
+# virtual display, curl-impersonate, the Playwright Node API (library only, no
+# bundled browser), and the chrome-start / chrome-challenge helpers.
+#
+# This is the host equivalent of the INSTALL_CHROME=true branch of the thehive
+# image Dockerfile, which is where all of these came from and where the comments
+# explaining *why* each choice was made still live. Idempotent.
+#
+#   sudo tools/hive-chrome-setup [/path/to/thehive/checkout]
+#
+# The helper scripts (chrome-start, chrome-challenge.js) are copied from a
+# checkout of paulmona/thehive rather than vendored here, so there is one copy
+# of them in the world. Defaults to ~friday/src/thehive.
+
+set -euo pipefail
+
+SRC="${1:-/home/friday/src/thehive}"
+CURL_IMPERSONATE_VERSION=v2.1.1
+CURL_IMPERSONATE_TARGET=chrome150
+
+die() { echo "[hive-chrome-setup] $*" >&2; exit 1; }
+log() { echo "[hive-chrome-setup] $*"; }
+
+[[ $EUID -eq 0 ]] || die "must run as root"
+[[ "$(dpkg --print-architecture)" == amd64 ]] || die "Google publishes no arm64 Linux Chrome"
+[[ -f "${SRC}/chrome-start" ]] || die "no chrome-start in ${SRC} (pass the thehive checkout path)"
+[[ -f "${SRC}/chrome-challenge.js" ]] || die "no chrome-challenge.js in ${SRC}"
+[[ -f "${SRC}/chrome-attach.js" ]] || die "no chrome-attach.js in ${SRC}"
+
+# 1. Chrome from Google's own repo. Deliberately not chromium and not
+# Playwright's download: the fingerprint of a real Chrome is the entire point.
+if ! command -v google-chrome-stable >/dev/null 2>&1; then
+  log "installing Google Chrome and Xvfb (~1GB)"
+  install -d -m 0755 /etc/apt/keyrings
+  curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+    | gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg
+  echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+    > /etc/apt/sources.list.d/google-chrome.list
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    google-chrome-stable xvfb fonts-liberation fonts-noto-color-emoji
+else
+  log "chrome present: $(google-chrome-stable --version)"
+  dpkg -s xvfb >/dev/null 2>&1 || { apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xvfb fonts-liberation fonts-noto-color-emoji; }
+fi
+
+# 2. curl-impersonate: curl rebuilt against BoringSSL with Chrome's TLS
+# fingerprint. Clears TLS-level rejection only; a JavaScript challenge still
+# needs the real browser above.
+if [[ ! -x /opt/curl-impersonate/curl-impersonate ]]; then
+  log "installing curl-impersonate ${CURL_IMPERSONATE_VERSION}"
+  install -d -m 0755 /opt/curl-impersonate
+  curl -fsSL "https://github.com/lexiforest/curl-impersonate/releases/download/${CURL_IMPERSONATE_VERSION}/curl-impersonate-${CURL_IMPERSONATE_VERSION}.x86_64-linux-gnu.tar.gz" \
+    | tar -xz -C /opt/curl-impersonate
+  ln -sf /opt/curl-impersonate/curl-impersonate /usr/local/bin/curl-impersonate
+fi
+# The shipped curl_chrome* wrappers locate the binary through $0, so they only
+# work from their own directory and cannot be symlinked. Write our own.
+printf '#!/bin/sh\nexec /opt/curl-impersonate/curl-impersonate --compressed --impersonate %s "$@"\n' \
+  "$CURL_IMPERSONATE_TARGET" > /usr/local/bin/curl_chrome
+chmod 0755 /usr/local/bin/curl_chrome
+
+# 3. Playwright Node API, library only. PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD is the
+# whole point: chromium.launch() must fail, so that the only way to get a
+# browser is connectOverCDP to the real Chrome installed above. The image
+# achieved this by discarding a builder stage; say it out loud instead.
+if [[ ! -d /opt/playwright/node_modules/playwright ]]; then
+  command -v npm >/dev/null 2>&1 || die "npm not installed; apt-get install nodejs npm first"
+  log "installing Playwright Node API without its bundled browser"
+  install -d -m 0755 /opt/playwright
+  [[ -f /opt/playwright/package.json ]] || ( cd /opt/playwright && npm init -y >/dev/null )
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm --prefix /opt/playwright install --no-audit --no-fund playwright
+fi
+
+# 4. Helpers, from the thehive checkout.
+install -m 0755 "${SRC}/chrome-start"        /usr/local/bin/chrome-start
+install -m 0644 "${SRC}/chrome-challenge.js" /opt/chrome-challenge.js
+install -m 0644 "${SRC}/chrome-attach.js"    /opt/chrome-attach.js
+log "installed chrome-start, /opt/chrome-challenge.js and /opt/chrome-attach.js from ${SRC} ($(git -C "$SRC" rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout'))"
+
+# 5. Prove it, rather than declaring it.
+log "--- verification ---"
+google-chrome-stable --version
+Xvfb -help >/dev/null 2>&1 && echo "Xvfb: ok"
+curl_chrome --version | head -1
+node -e "require('/opt/playwright/node_modules/playwright'); console.log('playwright: library loads')"
+node -e "
+const { chromium } = require('/opt/playwright/node_modules/playwright');
+chromium.launch().then(
+  () => { console.error('playwright: FAIL - launch() worked, a bundled browser got installed'); process.exit(1); },
+  () => console.log('playwright: launch() correctly unavailable, connectOverCDP is the only route'));
+"
+node --input-type=module -e "
+import('/opt/chrome-challenge.js').then(m =>
+  console.log('chrome-challenge: exports', Object.keys(m).join(', ')));
+"
+log "done. chrome-start is NOT run here; the agent starts it on demand."

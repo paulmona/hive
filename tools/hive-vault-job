@@ -1,0 +1,87 @@
+#!/bin/bash
+# Run one obsidian-second-brain scheduled agent against this user's vault,
+# headless. Invoked by the hive-vault-<job>@<agent> systemd templates as the
+# agent user; the unit sets HOME, PATH, OBSIDIAN_VAULT_PATH and the cwd.
+#
+# The product's four scheduled agents are prompts in SKILL.md meant for Claude
+# Code's /schedule, which runs in the cloud and cannot see /srv/hive-memory. This
+# is the documented alternative (SKILL.md, "headless gotcha"): feed the prompt to
+# `claude -p` on stdin. Slash commands do not expand in -p mode, so the prompt is
+# the agent's full instructions, not "/obsidian-health".
+#
+# Usage: hive-vault-job nightly|health
+set -euo pipefail
+
+JOB="${1:?usage: hive-vault-job nightly|health}"
+JOBS_DIR="${HIVE_VAULT_JOBS_DIR:-/usr/local/lib/hive-vault-jobs}"
+PROMPT_SRC="${JOBS_DIR}/${JOB}.md"
+VAULT="${OBSIDIAN_VAULT_PATH:?OBSIDIAN_VAULT_PATH not set}"
+SKILL_ROOT="${HOME}/.claude/skills/obsidian-second-brain"
+
+[[ -f "$PROMPT_SRC" ]] || { echo "no such job: $PROMPT_SRC" >&2; exit 2; }
+[[ -f "${VAULT}/_CLAUDE.md" ]] || { echo "no _CLAUDE.md in $VAULT, vault not bootstrapped" >&2; exit 2; }
+[[ -d "$SKILL_ROOT" ]] || { echo "skill not installed at $SKILL_ROOT" >&2; exit 2; }
+command -v claude >/dev/null || { echo "claude not on PATH ($PATH)" >&2; exit 2; }
+
+# The nightly runs at 03:30 and closes the day that just ended, so its "today"
+# is yesterday's date. Everything else uses the calendar date.
+if [[ "$JOB" == "nightly" ]]; then
+  TODAY="$(TZ=America/Toronto date -d yesterday +%Y-%m-%d)"
+else
+  TODAY="$(TZ=America/Toronto date +%Y-%m-%d)"
+fi
+NOW="$(TZ=America/Toronto date +%H:%M)"
+AGENT="$(id -un)"
+
+# The prompt files carry the product's wording verbatim, with two placeholders
+# it leaves for the operator to fill.
+PROMPT="$(sed -e "s|SKILL_ROOT|${SKILL_ROOT}|g" -e "s|VAULT|${VAULT}|g" "$PROMPT_SRC")"
+
+echo "hive-vault-job ${JOB}: vault=${VAULT} today=${TODAY} ${NOW} Eastern"
+START=$(date +%s)
+
+# --strict-mcp-config: no MCP servers. The jobs need only the filesystem and the
+# skill's scripts, and loading omada/home-assistant/mqtt into a batch run is
+# wasted startup at best and a stray MQTT session at worst.
+# --allowedTools narrows what --dangerously-skip-permissions would otherwise
+# open: no WebFetch, no WebSearch, no agents. Bash is needed for `uv run`.
+set +e
+claude --dangerously-skip-permissions --strict-mcp-config \
+  --allowedTools "Read,Write,Edit,Glob,Grep,Bash" \
+  -p <<PROMPT
+You are running unattended as the scheduled "${JOB}" agent for this vault.
+VAULT: ${VAULT}
+TODAY: ${TODAY} (Eastern Time; write dates in the vault as this)
+SKILL ROOT: ${SKILL_ROOT}
+Use filesystem tools only. No questions, no output for a human. Follow _CLAUDE.md.
+
+${PROMPT}
+PROMPT
+RC=$?
+set -e
+
+DURATION=$(( $(date +%s) - START ))
+echo "hive-vault-job ${JOB}: exit ${RC} after ${DURATION}s"
+
+# Publish a retained status line so Sunday's morning briefing can report every
+# agent's vault without reading it (she cannot; the folders are 0700). Broker
+# credentials are the agent's own MQTT channel config. Failure to publish is
+# logged but does not fail the job: the vault work already happened.
+MQTT_ENV="${HOME}/.claude/channels/mqtt/.env"
+if [[ -f "$MQTT_ENV" ]]; then
+  # Do not `source` the file: values are unquoted and passwords can carry `$`
+  # or spaces, which bash then expands or executes. Read KEY=VALUE literally.
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[2]}"; val="${BASH_REMATCH[3]}"
+    if [[ "$val" =~ ^\"(.*)\"$ || "$val" =~ ^\'(.*)\'$ ]]; then val="${BASH_REMATCH[1]}"; fi
+    export "$key=$val"
+  done < "$MQTT_ENV"
+  uv run --no-project --with paho-mqtt python "${JOBS_DIR}/publish_status.py" \
+    --agent "$AGENT" --job "$JOB" --date "$TODAY" --vault "$VAULT" \
+    --skill-root "$SKILL_ROOT" --exit-code "$RC" --duration "$DURATION" \
+    || echo "hive-vault-job ${JOB}: status publish failed" >&2
+else
+  echo "hive-vault-job ${JOB}: no MQTT config at ${MQTT_ENV}, status not published" >&2
+fi
+exit "$RC"

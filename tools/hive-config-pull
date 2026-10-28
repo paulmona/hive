@@ -1,0 +1,131 @@
+#!/bin/bash
+# Refresh this agent's operating config from git into ~/.claude.
+#
+# Runs as the agent's own user from refresh-from-vault.sh on every start.
+# Git is the source of truth; changes reach main only through a reviewed PR.
+# The pull is an unconditional overwrite, so a local edit to CLAUDE.md is
+# discarded at the next restart rather than persisting or blocking the pull.
+#
+# Always exits 0. A GitHub outage must never stop the agent from starting;
+# the previous config stays in place.
+
+set -uo pipefail
+
+REPO="${HIVE_REPO:-paulmona/hive}"
+CHECKOUT="${HIVE_CHECKOUT:-${HOME}/src/hive}"
+BRANCH="${HIVE_BRANCH:-main}"
+AGENT="${1:-friday}"
+VAULT_PATH="${HIVE_VAULT_PATH:-hive/agents/${AGENT}}"
+
+export VAULT_ADDR="${VAULT_ADDR:-http://vault.internal:8200}"
+export GIT_TERMINAL_PROMPT=0
+
+# Every message goes to stdout (captured in the systemd unit journal, readable
+# by root) and to syslog. The syslog copy is written by the agent's own uid, so
+# the agent can read its own pull history back with
+#   journalctl -t hive-config-pull
+# without being in the adm or systemd-journal group. logger failing must never
+# change this script's behaviour, hence the || true.
+LOG_TAG=hive-config-pull
+log()  { echo "[${LOG_TAG}] $*";      logger -t "$LOG_TAG" -p user.notice -- "${AGENT}: $*" || true; }
+warn() { echo "[${LOG_TAG}] $*" >&2;  logger -t "$LOG_TAG" -p user.err    -- "${AGENT}: $*" || true; }
+
+# Token is read fresh each run and never written to disk or into .git/config.
+CREDS="${HOME}/.vault-creds"
+VAULT_TOKEN=$(vault write -field=token auth/approle/login \
+  role_id="$(cat "${CREDS}/role_id")" \
+  secret_id="$(cat "${CREDS}/secret_id")" 2>/dev/null) || VAULT_TOKEN=""
+export VAULT_TOKEN
+GIT_TOKEN=$(vault kv get -field=_GITHUB_PAT "$VAULT_PATH" 2>/dev/null) || GIT_TOKEN=""
+
+if [[ -z "$GIT_TOKEN" ]]; then
+  warn "no git token available, config left untouched"
+  exit 0
+fi
+
+HELPER='!f(){ echo username=x-access-token; echo "password=$GIT_TOKEN"; };f'
+export GIT_TOKEN
+
+if [[ -d "$CHECKOUT/.git" ]]; then
+  # reset --hard, not merge: local edits are meant to be clobbered.
+  if git -C "$CHECKOUT" -c credential.helper="$HELPER" fetch -q --prune origin "$BRANCH" 2>/dev/null \
+     && git -C "$CHECKOUT" reset -q --hard "origin/${BRANCH}" 2>/dev/null; then
+    log "checkout at $(git -C "$CHECKOUT" rev-parse --short HEAD)"
+  else
+    warn "fetch failed, using existing checkout"
+  fi
+else
+  mkdir -p "$(dirname "$CHECKOUT")"
+  if git -c credential.helper="$HELPER" clone -q --branch "$BRANCH" --single-branch \
+       "https://github.com/${REPO}.git" "$CHECKOUT" 2>/dev/null; then
+    log "cloned ${REPO}"
+  else
+    warn "clone failed and no checkout exists, config left untouched"
+    exit 0
+  fi
+fi
+
+SRC_DIR="${CHECKOUT}/agents/${AGENT}"
+if [[ ! -f "${SRC_DIR}/CLAUDE.md" ]]; then
+  warn "no config for ${AGENT} in repo, config left untouched"
+  exit 0
+fi
+
+# Temp file on the same filesystem then rename, so a partial copy is never
+# visible to a starting agent.
+# The rename also makes it safe to replace a script that is running right now
+# (refresh-from-vault.sh is this script's caller): bash keeps reading the old
+# inode, the new file is picked up on the next start.
+install_file() {
+  local src=$1 dest=$2 mode=${3:-600} tmp
+  [[ -f "$src" ]] || return 0
+  mkdir -p "$(dirname "$dest")"
+  tmp=$(mktemp "$(dirname "$dest")/.hive-config.XXXXXX") || return 0
+  if cp "$src" "$tmp" && chmod "$mode" "$tmp" && mv -f "$tmp" "$dest"; then
+    log "installed $dest"
+  else
+    rm -f "$tmp"
+    warn "failed to install $dest"
+  fi
+}
+
+# Per-agent config.
+install_file "${SRC_DIR}/CLAUDE.md"      "${HOME}/.claude/CLAUDE.md"
+install_file "${SRC_DIR}/AGENT.md"       "${HOME}/.claude/agents/${AGENT}.md"
+install_file "${SRC_DIR}/settings.json"  "${HOME}/.claude/settings.json"
+
+# Skills, when the agent has any. One directory per skill under
+# agents/<name>/skills/. Skills present in ~/.claude/skills but not in the repo
+# are left alone: the product installs some of its own there.
+if [[ -d "${SRC_DIR}/skills" ]]; then
+  for skill_dir in "${SRC_DIR}"/skills/*/; do
+    skill=$(basename "$skill_dir")
+    for f in "$skill_dir"*; do
+      [[ -f "$f" ]] || continue
+      install_file "$f" "${HOME}/.claude/skills/${skill}/$(basename "$f")" 644
+    done
+  done
+fi
+
+# Hooks, when the agent has any. Flat files under agents/<name>/hooks/, installed
+# executable because the harness runs them directly. Mode 700 rather than 755:
+# a hook can deny tool calls, so only the agent itself should be able to run or
+# read it.
+if [[ -d "${SRC_DIR}/hooks" ]]; then
+  for f in "${SRC_DIR}"/hooks/*; do
+    [[ -f "$f" ]] || continue
+    install_file "$f" "${HOME}/.claude/hooks/$(basename "$f")" 700
+  done
+fi
+
+# Generic startup scripts, parameterised by unix user. The unit's ExecStart
+# points at ~/start-agent.sh, so the names in the home directory are fixed.
+TOOLS="${CHECKOUT}/tools"
+install_file "${TOOLS}/agent-start"          "${HOME}/start-agent.sh"          700
+install_file "${TOOLS}/refresh-from-vault"   "${HOME}/refresh-from-vault.sh"   700
+install_file "${TOOLS}/dev-channels-watcher" "${HOME}/dev-channels-watcher.sh" 700
+# gws-as: the read-side impersonation wrapper. Harmless for agents without a key.
+mkdir -p "${HOME}/.local/bin"
+install_file "${TOOLS}/gws-as"               "${HOME}/.local/bin/gws-as"        700
+
+exit 0

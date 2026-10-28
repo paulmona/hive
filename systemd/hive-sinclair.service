@@ -1,0 +1,26 @@
+[Unit]
+Description=Hive Agent: sinclair
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=sinclair
+Group=sinclair
+WorkingDirectory=/home/sinclair
+ExecStart=/usr/bin/tmux new-session -d -s claude /home/sinclair/start-agent.sh
+ExecStop=/usr/bin/tmux kill-session -t claude
+Restart=on-failure
+RestartSec=15
+
+# Mail and calendar only: no browser, no voice endpoint. Sunday's 4G is the
+# reference; the sinclair-gws server is a small Python process alongside claude.
+MemoryMax=4G
+CPUQuota=150%
+
+# Sinclair does not administer the host, so like hive-sunday and hive-oddjob
+# there is no sudo.conf drop-in and this stays in force.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

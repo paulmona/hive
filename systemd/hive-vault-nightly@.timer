@@ -1,0 +1,18 @@
+# Nightly vault consolidation at 03:30 Eastern. The product's default is 22:00,
+# but Paul is often still working with an agent then and the job writes the
+# day's End of Day summary; 03:30 is after the day has actually ended.
+# One instance per agent: systemctl enable --now hive-vault-nightly@friday.timer
+
+[Unit]
+Description=Nightly vault consolidation for %i
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 America/Toronto
+# Three agents share the host; spread them out rather than start three Claude
+# processes in the same second.
+RandomizedDelaySec=15min
+Persistent=true
+Unit=hive-vault-nightly@%i.service
+
+[Install]
+WantedBy=timers.target

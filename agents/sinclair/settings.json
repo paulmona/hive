@@ -1,0 +1,11 @@
+{
+  "model": "sonnet",
+  "effortLevel": "medium",
+  "skipDangerousModePermissionPrompt": true,
+  "agentPushNotifEnabled": false,
+  "env": {
+    "OBSIDIAN_VAULT_PATH": "/srv/hive-memory/sinclair",
+    "SINCLAIR_GWS_SA_KEY_PATH": "/home/sinclair/.config/gws-sa.json",
+    "GWS_SA_KEY_PATH": "/home/sinclair/.config/gws-sa.json"
+  }
+}

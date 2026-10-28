@@ -1,0 +1,65 @@
+#!/bin/bash
+# Runs every minute as root, from hive-memory-housekeeping.timer.
+#
+# Two jobs:
+#   1. Obsidian Sync writes as root. Hand each agent's folder back to that agent
+#      so the agent can keep writing to its own memory.
+#   2. Commit the vault to local git history.
+#
+# Never exits non-zero for an ordinary condition: a failure here would show as a
+# failed unit every minute. Real errors are logged and reported once at the end.
+
+set -uo pipefail
+
+VAULT="${HIVE_VAULT:-/srv/hive-memory}"
+GIT_DIR="${HIVE_VAULT_GIT:-/var/lib/hive-memory.git}"
+LOG_TAG=hive-memory-housekeeping
+
+log()  { logger -t "$LOG_TAG" -p user.notice -- "$*" || true; }
+warn() { logger -t "$LOG_TAG" -p user.err    -- "$*" || true; echo "$*" >&2; }
+
+[[ -d "$VAULT" ]]   || { warn "vault ${VAULT} missing"; exit 0; }
+[[ -d "$GIT_DIR" ]] || { warn "history repo ${GIT_DIR} missing"; exit 0; }
+
+rc=0
+
+# 1. Ownership.
+#
+# Only folders whose name matches a real user are touched. Anything else in the
+# vault is Paul's (a folder he made in Obsidian, say) and is left alone rather
+# than being handed to an agent that happens to share its name.
+shopt -s nullglob
+for dir in "$VAULT"/*/; do
+  agent=$(basename "$dir")
+  id -u "$agent" >/dev/null 2>&1 || continue
+
+  # Cheap check first. chown -R on every file every minute is wasteful, and on a
+  # vault being written by sync it is a needless source of churn.
+  if [[ -n $(find "$dir" ! -user "$agent" -print -quit 2>/dev/null) ]]; then
+    if chown -R "${agent}:${agent}" "$dir" 2>/dev/null; then
+      log "reclaimed ${dir} for ${agent}"
+    else
+      warn "chown failed for ${dir}"; rc=1
+    fi
+  fi
+
+  # Sync can recreate the folder with default permissions after a remote delete.
+  perms=$(stat -c '%a' "$dir" 2>/dev/null || echo "")
+  if [[ "$perms" != "700" ]]; then
+    chmod 0700 "$dir" 2>/dev/null && log "reset ${dir} to 0700 (was ${perms:-unknown})" || { warn "chmod failed for ${dir}"; rc=1; }
+  fi
+done
+
+# 2. History.
+git_vault() { git --git-dir="$GIT_DIR" --work-tree="$VAULT" "$@"; }
+
+if [[ -n $(git_vault status --porcelain 2>/dev/null) ]]; then
+  git_vault add -A 2>/dev/null
+  if git_vault commit -q -m "vault snapshot $(date -Iseconds)" 2>/dev/null; then
+    log "committed $(git_vault rev-parse --short HEAD)"
+  else
+    warn "commit failed"; rc=1
+  fi
+fi
+
+exit $rc

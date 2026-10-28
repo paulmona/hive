@@ -1,0 +1,24 @@
+[Unit]
+Description=Hive Agent: sunday
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=sunday
+Group=sunday
+WorkingDirectory=/home/sunday
+ExecStart=/usr/bin/tmux new-session -d -s claude /home/sunday/start-agent.sh
+ExecStop=/usr/bin/tmux kill-session -t claude
+Restart=on-failure
+RestartSec=15
+
+MemoryMax=4G
+CPUQuota=200%
+
+# Sunday does not administer the host, so unlike hive-friday there is no
+# sudo.conf drop-in and this stays in force.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

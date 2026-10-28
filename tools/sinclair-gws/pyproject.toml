@@ -1,0 +1,24 @@
+[project]
+name = "sinclair-gws"
+version = "0.1.0"
+description = "Sinclair's Google Workspace write layer: an MCP server whose tool signatures make wrong-identity, bare-From and fresh-compose sends unrepresentable."
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.2",
+    "google-auth>=2.30",
+    "httpx>=0.27",
+    "requests>=2.31",
+]
+
+[project.scripts]
+sinclair-gws = "sinclair_gws.server:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sinclair_gws"]

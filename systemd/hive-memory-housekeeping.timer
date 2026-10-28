@@ -1,0 +1,15 @@
+# Every minute. The window matters: until housekeeping runs, a file that Sync
+# just pulled down is still owned by root, so the agent can read it but not
+# rewrite it. A minute is the agreed upper bound on that.
+
+[Unit]
+Description=Run hive memory housekeeping every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=hive-memory-housekeeping.service
+
+[Install]
+WantedBy=timers.target

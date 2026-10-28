@@ -1,0 +1,86 @@
+#!/bin/bash
+# Root setup for one more agent on the hive VM. Creates the unix user, the
+# directories the startup path expects, and installs the agent's systemd unit
+# and drop-ins from this repo. Idempotent.
+#
+# Does NOT: write Vault credentials (Paul creates the AppRole and drops
+# role_id/secret_id into ~<agent>/.vault-creds), install Claude Code for the
+# user, install plugins, or start the unit. Those steps are in tools/INSTALL.md.
+#
+#   sudo tools/hive-agent-setup sunday
+
+set -euo pipefail
+
+AGENT="${1:?usage: hive-agent-setup <agent>}"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+UNIT="hive-${AGENT}.service"
+HOME_DIR="/home/${AGENT}"
+
+die() { echo "[hive-agent-setup] $*" >&2; exit 1; }
+log() { echo "[hive-agent-setup] $*"; }
+
+[[ $EUID -eq 0 ]] || die "must run as root"
+[[ -f "${REPO_DIR}/systemd/${UNIT}" ]] || die "no systemd/${UNIT} in repo"
+[[ -f "${REPO_DIR}/agents/${AGENT}/CLAUDE.md" ]] || die "no agents/${AGENT}/CLAUDE.md in repo"
+
+# 1. User. Same shape as friday: own group, bash, home under /home.
+if ! id -u "$AGENT" >/dev/null 2>&1; then
+  useradd --create-home --shell /bin/bash --user-group "$AGENT"
+  log "created user ${AGENT}"
+else
+  log "user ${AGENT} exists"
+fi
+
+# 2. Directories the first start needs. .vault-creds stays empty here on
+# purpose; the AppRole secret is Paul's to place.
+install -d -o "$AGENT" -g "$AGENT" -m 0700 "${HOME_DIR}/.vault-creds" "${HOME_DIR}/.claude" \
+  "${HOME_DIR}/.claude/agents" "${HOME_DIR}/.claude/skills" "${HOME_DIR}/.claude/channels" \
+  "${HOME_DIR}/src" "${HOME_DIR}/logs"
+
+# 3. Seed the agent's checkout from this one. hive-config-pull can clone on its
+# own, but refresh-from-vault calls the pull *from* ~/src/hive, so the
+# very first start has nothing to run without this. The remote is reset to
+# GitHub so the pull's fetch goes to the real origin, not to this directory.
+if [[ ! -d "${HOME_DIR}/src/hive/.git" ]]; then
+  # --no-hardlinks is load-bearing. A local `git clone` hardlinks the source's
+  # object files into the new repo, so the `chown -R` below follows those inodes
+  # and silently changes ownership of the OPERATOR's checkout as well. That bit
+  # on 2026-09-05: seeding oddjob left 193 objects in friday's repo owned by
+  # oddjob, and friday's corrective `chown -R friday` then broke oddjob's config
+  # pull with "unable to open loose object: Permission denied". Both checkouts
+  # had to be rebuilt. Copy the objects instead; the repo is a few MB.
+  git clone -q --no-hardlinks "$REPO_DIR" "${HOME_DIR}/src/hive"
+  git -C "${HOME_DIR}/src/hive" remote set-url origin https://github.com/paulmona/hive.git
+  chown -R "$AGENT:$AGENT" "${HOME_DIR}/src/hive"
+  log "seeded ~/src/hive from $(git -C "$REPO_DIR" rev-parse --short HEAD)"
+fi
+
+# 4. First copy of the startup scripts, so the first boot has something to run.
+# From then on hive-config-pull refreshes them from git on every start.
+for pair in agent-start:start-agent.sh refresh-from-vault:refresh-from-vault.sh dev-channels-watcher:dev-channels-watcher.sh; do
+  src="${REPO_DIR}/tools/${pair%%:*}"; dest="${HOME_DIR}/${pair##*:}"
+  install -o "$AGENT" -g "$AGENT" -m 0700 "$src" "$dest"
+done
+log "startup scripts installed"
+
+# 5. Unit and drop-ins. Installed, enabled, not started.
+install -m 0644 "${REPO_DIR}/systemd/${UNIT}" "/etc/systemd/system/${UNIT}"
+if [[ -d "${REPO_DIR}/systemd/${UNIT}.d" ]]; then
+  install -d -m 0755 "/etc/systemd/system/${UNIT}.d"
+  install -m 0644 "${REPO_DIR}/systemd/${UNIT}.d/"*.conf "/etc/systemd/system/${UNIT}.d/"
+fi
+systemctl daemon-reload
+systemctl enable "$UNIT" >/dev/null
+log "${UNIT} installed and enabled (not started)"
+
+# 6. Memory vault folder, via the existing idempotent setup.
+"${REPO_DIR}/tools/hive-memory-setup" friday "$AGENT"
+
+cat <<MSG
+
+Next, as described in tools/INSTALL.md:
+  1. Paul: create AppRole for ${AGENT}, write role_id and secret_id into ${HOME_DIR}/.vault-creds/
+  2. as ${AGENT}: install Claude Code (curl -fsSL https://claude.ai/install.sh | bash), then claude login
+  3. as ${AGENT}: first config pull, plugin install, MCP registration
+  4. systemctl start ${UNIT}
+MSG

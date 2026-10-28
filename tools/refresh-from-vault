@@ -1,0 +1,77 @@
+#!/bin/bash
+# Pull this agent's config and secrets from Vault into ~/.claude.
+# Invoked by start-agent.sh on every start, so Vault stays the source of truth
+# for secrets. Generic: the agent name is the unix user. Installed to
+# ~/refresh-from-vault.sh by tools/hive-config-pull.
+set -euo pipefail
+
+export VAULT_ADDR="${VAULT_ADDR:-http://vault.internal:8200}"
+CREDS="${HOME}/.vault-creds"
+CLAUDE_DIR="${HOME}/.claude"
+AGENT="${HIVE_AGENT:-$(id -un)}"
+
+VAULT_TOKEN=$(vault write -field=token auth/approle/login \
+  role_id="$(cat "${CREDS}/role_id")" \
+  secret_id="$(cat "${CREDS}/secret_id")")
+export VAULT_TOKEN
+
+shared=$(vault kv get -format=json hive/shared      | jq '.data.data')
+mine=$(  vault kv get -format=json "hive/agents/${AGENT}" | jq '.data.data')
+
+mkdir -p "${CLAUDE_DIR}/agents" "${CLAUDE_DIR}/channels/mqtt"
+umask 077
+
+# jq emits multi-line values intact. The April truncation bug came from a shell
+# read loop splitting on newlines; do not reintroduce one here.
+# CLAUDE.md and agents/<agent>.md come from git, not Vault. Source of truth is
+# paulmona/hive; reaching main needs a reviewed PR.
+#
+# Never allowed to abort this script: set -e is on, and everything below this
+# point writes the .env files the agent needs to start at all. A missing or
+# failing pull leaves the previous config in place, which is survivable; no
+# credentials is not.
+PULL="${HOME}/src/hive/tools/hive-config-pull"
+if [[ -x "$PULL" ]]; then
+  "$PULL" "$AGENT" || echo "[refresh-from-vault] config pull failed, keeping existing config" >&2
+else
+  echo "[refresh-from-vault] ${PULL} not present, keeping existing config" >&2
+fi
+
+# Env file: shared first, agent values win. Config blobs and bookkeeping excluded.
+# GWS_SA_KEY (the container-era name for the service-account JSON) is excluded too:
+# on this host the key reaches gws-as and sinclair-gws as a file, never as an
+# environment variable, and a multi-line private key in every process env is
+# exactly the kind of thing that ends up printed by accident (it did, 2026-09-08).
+EXCLUDE='_MD$|^_|^GWS_SA_KEY$'
+{
+  jq -r --arg x "$EXCLUDE" 'to_entries[] | select(.key|test($x)|not) | "export \(.key)=\(.value|@sh)"' <<<"${shared}"
+  jq -r --arg x "$EXCLUDE" 'to_entries[] | select(.key|test($x)|not) | "export \(.key)=\(.value|@sh)"' <<<"${mine}"
+} > "${CLAUDE_DIR}/.env"
+
+# MQTT channel config lives in its own state dir, not the main env file.
+{
+  jq -r '.MQTT_BROKER_URL // empty | select(.!="") | "MQTT_BROKER_URL=\(.)"' <<<"${shared}"
+  jq -r 'to_entries[] | select(.key|startswith("MQTT_")) | "\(.key)=\(.value)"' <<<"${mine}"
+  echo "SESSION_NAME=${AGENT}"
+  echo "MQTT_TOPIC_PREFIX=hive"
+} > "${CLAUDE_DIR}/channels/mqtt/.env"
+
+# Discord channel config, only for agents that have a bot token. Same shape the
+# Unraid entrypoint used, so the plugin finds it where it always did.
+if jq -e '.DISCORD_BOT_TOKEN // empty | select(.!="")' <<<"${mine}" >/dev/null; then
+  mkdir -p "${CLAUDE_DIR}/channels/discord"
+  jq -r '"DISCORD_BOT_TOKEN=\(.DISCORD_BOT_TOKEN)"' <<<"${mine}" > "${CLAUDE_DIR}/channels/discord/.env"
+  chmod 600 "${CLAUDE_DIR}/channels/discord/.env"
+fi
+
+# Google service-account key, for agents that have one (Sinclair). Underscore-
+# prefixed in Vault so it never lands in .env; written to a file that gws-as and
+# the sinclair-gws server read by path. Umask 077 is still in force.
+if jq -e '._GWS_SA_KEY // empty | select(.!="")' <<<"${mine}" >/dev/null; then
+  mkdir -p "${HOME}/.config"
+  jq -r '._GWS_SA_KEY' <<<"${mine}" > "${HOME}/.config/gws-sa.json"
+  chmod 600 "${HOME}/.config/gws-sa.json"
+fi
+
+chmod 600 "${CLAUDE_DIR}/.env" "${CLAUDE_DIR}/channels/mqtt/.env"
+echo "[refresh-from-vault] config and secrets refreshed $(date -Iseconds)"

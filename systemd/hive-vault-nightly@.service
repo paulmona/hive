@@ -1,0 +1,25 @@
+# Headless obsidian-second-brain "nightly" agent for one agent's vault.
+# Instance name is the agent's unix user: hive-vault-nightly@friday.service.
+# Triggered by hive-vault-nightly@.timer; not meant to be started by hand except
+# to test (systemctl start hive-vault-nightly@friday).
+
+[Unit]
+Description=Vault nightly job for %i
+Documentation=https://github.com/paulmona/hive/blob/main/systemd/README.md
+After=network-online.target hive-memory-housekeeping.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=%i
+Group=%i
+WorkingDirectory=/srv/hive-memory/%i
+# Set explicitly rather than trusting the login environment; the agent's own
+# unit does the same, and claude lives under ~/.local/bin.
+Environment=HOME=/home/%i
+Environment=PATH=/home/%i/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=OBSIDIAN_VAULT_PATH=/srv/hive-memory/%i
+ExecStart=/usr/local/sbin/hive-vault-job nightly
+TimeoutStartSec=45min
+MemoryMax=2G
+NoNewPrivileges=true

@@ -1,0 +1,119 @@
+#!/bin/bash
+# One-time root setup for the shared agent memory vault.
+#
+# Creates /srv/hive-memory, gives each agent a private subfolder, installs the
+# Obsidian headless client, and wires up the sync and housekeeping units.
+#
+# Idempotent: safe to re-run to add an agent or repair permissions.
+#
+# Does NOT log in to Obsidian and does NOT start the sync service. Sync needs
+# credentials and a remote vault that only exist once Paul has created them; see
+# tools/MEMORY-INSTALL.md for the steps that follow this script.
+
+set -euo pipefail
+
+VAULT="${HIVE_VAULT:-/srv/hive-memory}"
+GIT_DIR="${HIVE_VAULT_GIT:-/var/lib/hive-memory.git}"
+OB_VERSION="${OB_VERSION:-0.0.14}"
+AGENTS=("$@")
+[[ ${#AGENTS[@]} -gt 0 ]] || AGENTS=(friday)
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+die() { echo "[hive-memory-setup] $*" >&2; exit 1; }
+log() { echo "[hive-memory-setup] $*"; }
+
+[[ $EUID -eq 0 ]] || die "must run as root"
+
+# 1. Node. The headless client declares engines >=22.
+command -v node >/dev/null || die "node not installed"
+node_major=$(node -p 'process.versions.node.split(".")[0]')
+[[ $node_major -ge 22 ]] || die "node >=22 required, found $(node --version)"
+
+# 2. Headless client. Pinned: it is an open beta and its CLI surface has already
+# drifted once from what the TRD assumed.
+if [[ "$(ob --version 2>/dev/null || echo none)" != "$OB_VERSION" ]]; then
+  log "installing obsidian-headless@${OB_VERSION}"
+  npm install -g --no-fund --no-audit "obsidian-headless@${OB_VERSION}"
+else
+  log "obsidian-headless@${OB_VERSION} already installed"
+fi
+command -v ob >/dev/null || die "ob not on PATH after install"
+
+# 3. Vault root. Root-owned and world-listable so each agent can traverse into
+# its own folder; the privacy boundary is the 0700 on the subfolders below.
+install -d -o root -g root -m 0755 "$VAULT"
+
+# 4. Per-agent folders. 0700 owned by the agent is what stops Friday reading
+# Sunday's memory. The filesystem enforces it, not the agents' good manners.
+for agent in "${AGENTS[@]}"; do
+  id -u "$agent" >/dev/null 2>&1 || die "no such user: ${agent}"
+  install -d -o "$agent" -g "$agent" -m 0700 "${VAULT}/${agent}"
+  log "agent folder ${VAULT}/${agent} (0700 ${agent}:${agent})"
+done
+
+# 5. Local git history.
+#
+# The git directory lives OUTSIDE the vault deliberately. A .git inside the
+# vault would be handed to Obsidian Sync and land on Paul's Mac and phone, and
+# every agent write would race the sync client over git's own index. Separating
+# --git-dir from --work-tree keeps the vault a plain folder of markdown.
+if [[ ! -d "$GIT_DIR" ]]; then
+  git init -q --bare "$GIT_DIR"
+  git --git-dir="$GIT_DIR" config core.bare false
+  git --git-dir="$GIT_DIR" config core.worktree "$VAULT"
+  log "created history repo ${GIT_DIR}"
+fi
+git --git-dir="$GIT_DIR" config user.name  "hive-memory"
+git --git-dir="$GIT_DIR" config user.email "hive-memory@localhost"
+# The work tree is deliberately owned by several different users, which git
+# otherwise refuses to touch.
+git config --system --replace-all safe.directory "$VAULT" "^${VAULT}$" || true
+
+# Churn that would otherwise produce a commit every single minute.
+install -d -m 0755 "${GIT_DIR}/info"
+cat > "${GIT_DIR}/info/exclude" <<'EXCLUDE'
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.trash/
+.DS_Store
+EXCLUDE
+
+# 6. Units.
+for unit in hive-memory-sync.service hive-memory-housekeeping.service hive-memory-housekeeping.timer; do
+  install -m 0644 -D "${REPO_DIR}/systemd/${unit}" "/etc/systemd/system/${unit}"
+done
+install -m 0755 -D "${REPO_DIR}/tools/hive-memory-housekeeping" /usr/local/sbin/hive-memory-housekeeping
+
+# 7. Scheduled vault agents (nightly consolidation, weekly health report), one
+# timer instance per agent. Templates and the job runner are root-owned; the job
+# itself runs as the agent, headless, inside its vault. See systemd/README.md.
+for unit in hive-vault-nightly@.service hive-vault-nightly@.timer hive-vault-health@.service hive-vault-health@.timer; do
+  install -m 0644 -D "${REPO_DIR}/systemd/${unit}" "/etc/systemd/system/${unit}"
+done
+install -m 0755 -D "${REPO_DIR}/tools/hive-vault-job" /usr/local/sbin/hive-vault-job
+install -d -m 0755 /usr/local/lib/hive-vault-jobs
+install -m 0644 "${REPO_DIR}/tools/vault-jobs/"*.md "${REPO_DIR}/tools/vault-jobs/"*.py /usr/local/lib/hive-vault-jobs/
+systemctl daemon-reload
+
+# The timer is safe to run now: it only fixes ownership and commits. The sync
+# service is not, because nothing has logged in yet.
+systemctl enable --now hive-memory-housekeeping.timer
+log "housekeeping timer enabled"
+
+for agent in "${AGENTS[@]}"; do
+  systemctl enable --now "hive-vault-nightly@${agent}.timer" "hive-vault-health@${agent}.timer"
+  log "vault job timers enabled for ${agent}"
+done
+
+cat <<NEXT
+
+[hive-memory-setup] done. Sync is installed but NOT started.
+
+Next, still as root:
+  1. ob login                       (hive Obsidian account; see MEMORY-INSTALL.md)
+  2. ob sync-setup --path ${VAULT} --vault <remote-vault-name>
+  3. ob sync-config --path ${VAULT} --conflict-strategy merge
+  4. systemctl enable --now hive-memory-sync.service
+
+NEXT

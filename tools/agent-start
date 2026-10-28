@@ -1,0 +1,81 @@
+#!/bin/bash
+# Agent entrypoint, run by the hive-<agent> systemd unit inside tmux.
+# Generic: the agent name is the unix user (friday, sunday, ...). The agent
+# definition installed by hive-config-pull is named with a capital, so the
+# --agent flag gets ${AGENT^}.
+#
+# Installed to ~/start-agent.sh by tools/hive-config-pull on every start, so an
+# edit here takes effect on the restart after the one that pulls it.
+set -euo pipefail
+
+AGENT="${HIVE_AGENT:-$(id -un)}"
+
+"${HOME}/refresh-from-vault.sh"
+
+set -a
+# shellcheck disable=SC1091
+source "${HOME}/.claude/.env"
+set +a
+
+# Presses Enter on the dev-channels warning so restarts come back unattended.
+bash "${HOME}/dev-channels-watcher.sh" &
+
+# The obsidian-second-brain plugin launches its vault MCP server with uv, which
+# lives in ~/.local/bin. systemd does not put that on PATH.
+export PATH="${HOME}/.local/bin:${PATH}"
+
+# Per-agent flags. Friday runs in auto mode and administers the host; Sunday
+# skips permission prompts because her inputs (HA voice, Discord from the car)
+# cannot answer one, and carries the Discord channel and the ha-voice endpoint;
+# Oddjob skips them for the same reason and carries MQTT only.
+case "$AGENT" in
+  sunday)
+    AGENT_FLAGS=(--dangerously-skip-permissions --model "opus[1m]")
+    # HIVE_NO_CHANNELS=1 (set in the unit environment) starts her with no
+    # Discord, MQTT, or voice: the first start on a new host proves config,
+    # Vault and memory before any channel can reach her.
+    if [[ "${HIVE_NO_CHANNELS:-0}" != "1" ]]; then
+      AGENT_FLAGS+=(
+        --channels plugin:discord@claude-plugins-official
+        --dangerously-load-development-channels server:mqtt server:ha-voice
+      )
+    fi ;;
+  oddjob)
+    # Skips prompts for the same reason Sunday does: his only input is an MQTT
+    # request from another agent, and nothing on the far end of one can answer a
+    # permission prompt. He has no sudo and no sudo.conf drop-in.
+    #
+    # Deliberately NO --model here. The flag overrides settings.json silently,
+    # which is exactly how a considered change to his model got quietly ignored
+    # on 2026-09-05: settings.json said opus, the process still ran opus[1m], and
+    # nothing anywhere reported a conflict. His model belongs in
+    # agents/oddjob/settings.json and nowhere else.
+    AGENT_FLAGS=(--dangerously-skip-permissions)
+    if [[ "${HIVE_NO_CHANNELS:-0}" != "1" ]]; then
+      AGENT_FLAGS+=(--dangerously-load-development-channels server:mqtt)
+    fi ;;
+  sinclair)
+    # MQTT only, no Discord, no voice. Skips prompts for the same reason Oddjob
+    # does: his inputs are Sunday and two Home Assistant automations, and nothing
+    # on the far end of those can answer a permission prompt. His guardrails are
+    # the tiers in CLAUDE.md and the sinclair-gws server's own refusals.
+    #
+    # No --model here, for the reason recorded on oddjob above: the flag would
+    # silently beat settings.json. His model is in agents/sinclair/settings.json.
+    AGENT_FLAGS=(--dangerously-skip-permissions)
+    if [[ "${HIVE_NO_CHANNELS:-0}" != "1" ]]; then
+      AGENT_FLAGS+=(--dangerously-load-development-channels server:mqtt)
+    fi ;;
+  *)
+    AGENT_FLAGS=(
+      --add-dir "${HOME}/src"
+      --permission-mode auto
+      --model opus
+      --dangerously-load-development-channels server:mqtt
+    ) ;;
+esac
+
+exec "${HOME}/.local/bin/claude" \
+  --agent "${AGENT^}" \
+  --remote-control "${AGENT}" \
+  "${AGENT_FLAGS[@]}"

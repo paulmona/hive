@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Friday's one pre-approved privileged action: restart Sinclair.
+# settings.json allows this exact path, so it runs without the `Bash(sudo *)`
+# prompt that otherwise parks Friday's whole session until Paul answers.
+# Reading Sinclair's journal needs no sudo: friday is in systemd-journal.
+set -euo pipefail
+sudo systemctl restart hive-sinclair.service
+systemctl --no-pager --lines=0 status hive-sinclair.service

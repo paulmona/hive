@@ -1,0 +1,42 @@
+{
+  "model": "opus[1m]",
+  "effortLevel": "medium",
+  "outputStyle": "Concise",
+  "enabledPlugins": {
+    "discord@claude-plugins-official": true,
+    "mqtt@claude-code-mqtt": false
+  },
+  "skipDangerousModePermissionPrompt": true,
+  "agentPushNotifEnabled": true,
+  "env": {
+    "OBSIDIAN_VAULT_PATH": "/srv/hive-memory/sunday",
+    "HA_VOICE_PORT": "8790",
+    "OBSIDIAN_BG_AGENT_ENABLED": "1",
+    "CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT": "0"
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/sunday/.claude/hooks/tone-reminder.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__mqtt__publish|mcp__mqtt__reply|mcp__plugin_discord_discord__reply|mcp__plugin_discord_discord__edit_message",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/sunday/.claude/hooks/no-package-guard.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

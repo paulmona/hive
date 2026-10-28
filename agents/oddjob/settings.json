@@ -1,0 +1,23 @@
+{
+  "model": "opus",
+  "effortLevel": "medium",
+  "skipDangerousModePermissionPrompt": true,
+  "agentPushNotifEnabled": false,
+  "env": {
+    "OBSIDIAN_VAULT_PATH": "/srv/hive-memory/oddjob"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "WebSearch|WebFetch|Bash|Task|Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/oddjob/.claude/hooks/research-budget.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

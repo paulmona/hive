@@ -1,0 +1,23 @@
+[Unit]
+Description=Hive Agent: friday
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=friday
+Group=friday
+WorkingDirectory=/home/friday
+ExecStart=/usr/bin/tmux new-session -d -s claude /home/friday/start-agent.sh
+ExecStop=/usr/bin/tmux kill-session -t claude
+Restart=on-failure
+RestartSec=15
+
+# Claude sat at 287M doing nothing on the old 512M limit; give it real headroom.
+MemoryMax=4G
+CPUQuota=200%
+
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

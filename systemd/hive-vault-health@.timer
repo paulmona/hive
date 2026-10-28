@@ -1,0 +1,15 @@
+# Weekly vault health report, Monday 04:30 Eastern: after that night's
+# consolidation, before Sunday's morning briefing reads the status topic.
+# One instance per agent: systemctl enable --now hive-vault-health@friday.timer
+
+[Unit]
+Description=Weekly vault health report for %i
+
+[Timer]
+OnCalendar=Mon *-*-* 04:30:00 America/Toronto
+RandomizedDelaySec=15min
+Persistent=true
+Unit=hive-vault-health@%i.service
+
+[Install]
+WantedBy=timers.target

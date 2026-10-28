@@ -1,0 +1,36 @@
+#!/bin/bash
+# Auto-accepts the --dangerously-load-development-channels warning that Claude
+# Code shows on every start. As of 2.1.258 there is no flag, env var, or
+# settings key to suppress it; the only way past is a human Enter. One-shot:
+# polls the pane this script was launched in for the first ten minutes, sends
+# Enter once when the live dialog is on screen, then exits.
+#
+# Usage: dev-channels-watcher.sh &   (from inside the tmux pane running claude)
+# Installed to ~/dev-channels-watcher.sh by tools/hive-config-pull.
+
+log="${HOME}/logs/startup-watcher.log"
+pane="${TMUX_PANE:-}"
+mkdir -p "$(dirname "$log")"
+
+if [[ -z "$pane" ]]; then
+  echo "$(date -Is) not inside tmux, nothing to watch" >>"$log"
+  exit 0
+fi
+
+for _ in $(seq 1 300); do
+  sleep 2
+  screen="$(tmux capture-pane -p -t "$pane" 2>/dev/null || true)"
+  if grep -q "WARNING: Loading development channels" <<<"$screen" \
+     && grep -q "I am using this for local development" <<<"$screen"; then
+    tmux send-keys -t "$pane" Enter
+    sleep 3
+    if tmux capture-pane -p -t "$pane" 2>/dev/null \
+       | grep -q "WARNING: Loading development channels"; then
+      echo "$(date -Is) sent Enter to $pane, dialog STILL VISIBLE" >>"$log"
+    else
+      echo "$(date -Is) sent Enter to $pane, dialog cleared" >>"$log"
+    fi
+    exit 0
+  fi
+done
+echo "$(date -Is) no dev-channels dialog on $pane within 600s" >>"$log"
