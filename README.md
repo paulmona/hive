@@ -21,7 +21,8 @@ working system, not a template.
 The same agents, with the same memory, are reachable from wherever Paul is:
 
 - **In the house, by voice.** Home Assistant voice satellites route speech to
-  Sunday, who answers out loud and controls the devices Home Assistant exposes:
+  Sunday through
+  [ha-claude-integration](https://github.com/paulmona/ha-claude-integration), who answers out loud and controls the devices Home Assistant exposes:
   "turn off the basement lights, and what's on tomorrow?"
 - **In the car.** Android Auto reads and dictates Discord messages, so Sunday is
   available hands-free while driving: a briefing, a reminder, a question.

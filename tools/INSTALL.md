@@ -124,7 +124,7 @@ As `sunday` (`sudo -iu sunday`), once:
     ~/.local/bin/claude mcp add -s user ha-voice -- node /opt/ha-voice/ha-voice.js
 
 `ha-voice` reads `HA_URL`, `HA_TOKEN` and `HA_VOICE_PORT` from the environment
-`start-agent.sh` exports, so no `-e` flags. Its source is `paulmona/thehive`
+`start-agent.sh` exports, so no `-e` flags. Its source is `paulmona/ha-claude-integration`
 (`ha-voice/`); install it once as root to `/opt/ha-voice` with `npm ci`, next
 to `/opt/claude-code-mqtt`.
 
