@@ -115,8 +115,8 @@ Start-up sequence (`tools/agent-start`):
 
 Every agent logs in to the same Claude account, so every agent inherits that
 account's cloud connectors with no per-host setup: Notion, Gmail, Google
-Calendar and Drive, Linear, Cloudflare, Home Assistant, Garmin and anything
-else connected to the account. Authentication lives in Claude's cloud, not on
+Calendar and Drive, Linear, HubSpot, Cloudflare and anything else connected to
+the account. Authentication lives in Claude's cloud, not on
 the VM, so there are no OAuth tokens on disk to manage or rotate, and adding a
 connector once makes it available to the whole fleet.
 
