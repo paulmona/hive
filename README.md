@@ -176,7 +176,7 @@ How an agent uses it:
 
 The memory layer is the
 [obsidian-second-brain](https://github.com/eugeniughelbur/obsidian-second-brain)
-skill, run as shipped. What this repo adds is the multi-agent hosting around
+skill, run as shipped. This replaced a custom PG Vector database in the original design. What this repo adds is the multi-agent hosting around
 it:
 
 - **Isolation by the filesystem.** Each agent's folder is mode 0700 and owned by
