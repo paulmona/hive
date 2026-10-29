@@ -155,8 +155,10 @@ other's paths. Nothing secret lives in this repo.
 ### Messaging
 
 Agents talk over MQTT (Mosquitto), one inbox topic per agent at
-`hive/sessions/<name>/inbox`, through an MCP server that exposes `publish`,
-`reply` and correlated `request`/response. Inbound traffic is tiered per sender
+`hive/sessions/<name>/inbox`, through the
+[claude-code-mqtt](https://github.com/mattstein111/claude-code-mqtt) channel
+plugin by Matt Stein, which exposes `publish`, `reply` and correlated
+`request`/response. Inbound traffic is tiered per sender
 or topic:
 
 - **admitted**: delivered into the agent's context in real time
