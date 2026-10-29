@@ -1,14 +1,41 @@
 # hive
 
-A small fleet of specialist Claude Code agents running as long-lived services on
-a single home-lab VM, with reviewed config in git, secrets in HashiCorp Vault,
-an MQTT message bus between agents, and per-agent durable memory in Obsidian.
+> **This is a public copy of a private production repository.** The private
+> repo is what the agents actually pull their config from on every start. This
+> copy is a sanitized snapshot of it: personal addresses, database IDs and
+> internal hostnames are replaced with placeholders, and personal skills are
+> removed. Everything else is as it runs.
+
+A fleet of specialist Claude Code agents running side by side as long-lived
+services on one VM, with reviewed config in git, secrets in HashiCorp Vault,
+an MQTT message bus between agents, and per-agent durable memory kept as plain
+markdown.
 
 This repository is the operating configuration for the whole fleet: each
 agent's instructions, settings, hooks and skills, the systemd units that run
 them, the host setup scripts, and one purpose-built MCP server. It is a
-working system, not a template. Personal values (addresses, database IDs,
-internal hostnames) have been replaced with placeholders.
+working system, not a template.
+
+## What it does
+
+The same agents, with the same memory, are reachable from wherever Paul is:
+
+- **In the house, by voice.** Home Assistant voice satellites route speech to
+  Sunday, who answers out loud and controls the devices Home Assistant exposes:
+  "turn off the basement lights, and what's on tomorrow?"
+- **In the car.** Android Auto reads and dictates Discord messages, so Sunday is
+  available hands-free while driving: a briefing, a reminder, a question.
+- **On the phone or at a desk.** Claude Code Remote Control from the Claude app
+  attaches to Sunday or Friday's running session.
+- **Morning briefing.** Sunday combines calendar, sleep and recovery data,
+  to-dos, bills and the health of every agent's memory into one short brief,
+  and prescribes the day's training session.
+- **Delegation between agents.** Sunday hands a research question to Oddjob,
+  who uses a real browser and reports back. Sinclair triages the business inbox
+  and drafts replies that are sent only after approval. Friday writes code,
+  opens PRs against this repo, and diagnoses the home network.
+- **Next: smart glasses.** Another interface onto the same agents and memory,
+  rather than another assistant.
 
 ## The fleet
 
@@ -29,44 +56,42 @@ instructions alone.
 
 ```mermaid
 flowchart LR
-  subgraph clients[Paul]
-    app[Claude app<br/>Remote Control]
-    voice[Home Assistant voice]
-    discord[Discord]
+  subgraph ui[Interfaces]
+    app[Claude app]
+    voice[HA voice]
+    discord[Discord<br/>phone, car]
   end
 
-  subgraph vm[hive VM]
-    direction TB
-    subgraph agents[systemd + tmux, one unix user each]
-      sunday[Sunday]
-      friday[Friday]
-      sinclair[Sinclair<br/>+ sinclair-gws MCP]
-      oddjob[Oddjob<br/>+ Chrome / Xvfb]
-    end
-    mem[(/srv/hive-memory<br/>Obsidian vault<br/>0700 folder per agent)]
-    jobs[systemd timers<br/>vault nightly + health<br/>housekeeping]
+  subgraph vm[Agent VM]
+    sunday[Sunday]
+    friday[Friday]
+    sinclair[Sinclair]
+    oddjob[Oddjob]
+    mem[(Memory)]
+    timers[Timers]
   end
 
-  subgraph infra[Home infrastructure]
-    vault[(HashiCorp Vault<br/>AppRole per agent)]
-    mqtt{{Mosquitto MQTT}}
-    s3[(Garage S3)]
-    gh[(GitHub<br/>this repo)]
-  end
+  mqtt{{MQTT}}
+  vault[(Vault)]
+  gh[(GitHub)]
+  s3[(S3)]
+  gws[Workspace]
 
   app --> sunday & friday
   voice --> sunday
   discord --> sunday
-  agents <--> mqtt
-  agents --> mem
-  jobs --> mem
-  jobs -- status --> mqtt
-  agents -- start: secrets --> vault
-  agents -- start: config pull --> gh
-  agents <--> s3
-  friday -- PRs --> gh
-  sinclair --> gws[Google Workspace]
+  sunday & friday & sinclair & oddjob <--> mqtt
+  sunday & friday & sinclair & oddjob --> mem
+  timers --> mem
+  vm -->|secrets| vault
+  vm -->|config| gh
+  vm <--> s3
+  sinclair --> gws
 ```
+
+Each agent runs as its own unix user. Memory is one markdown folder per agent,
+readable only by that agent. Timers run the nightly memory consolidation and
+weekly health check. Secrets and config are fetched on every start.
 
 ### Runtime
 
@@ -124,22 +149,50 @@ Larger payloads go through Garage S3; the message carries the object path.
 
 ### Memory
 
-Durable memory is one Obsidian vault at `/srv/hive-memory` with a 0700 folder
-per agent, operated by the
-[obsidian-second-brain](https://github.com/eugeniughelbur/obsidian-second-brain)
-skill as shipped. Isolation is filesystem permissions, not instructions: an
-agent cannot read another agent's memory.
+Each agent's long-term memory is a folder of plain markdown notes: projects,
+decisions, people, dev logs, daily notes, each with structured frontmatter and
+links to related notes. The folders live together as one
+[Obsidian](https://obsidian.md) vault at `/srv/hive-memory`, which gives Paul a
+synced, searchable, graph view of everything the agents know on any device,
+but nothing depends on Obsidian to read or write it. It is files.
 
-- Obsidian Sync runs as root on the parent folder; a once-a-minute housekeeping
-  timer hands files back to their owners and commits the tree to local git
-  history (`tools/hive-memory-housekeeping`).
-- The skill's scheduled agents (nightly consolidation, weekly health check) are
-  designed for a cloud scheduler that cannot see a local vault, so they run here
-  as systemd timer templates, one instance per agent, via headless `claude -p`
+How an agent uses it:
+
+- **Loaded at the start of every session.** A session-start hook injects the
+  vault's operating manual (folder map, note types, what to save and when) and
+  the agent reads `index.md` before searching. A restarted agent picks up where
+  it left off rather than starting cold.
+- **One memory across every interface.** An agent is one long-running process.
+  A voice request in the kitchen, a Discord message from the car and a Remote
+  Control session on the phone all reach the same agent with the same memory,
+  so a decision made by voice is known when Paul picks up the phone.
+- **Written as it goes.** Decisions, corrections, completed work and new
+  people are saved during the conversation. A correction rewrites the existing
+  note instead of appending a contradiction beside it. On Friday and Sunday a
+  background agent also writes the summary of a compacted conversation back
+  into the vault, so nothing is lost when the context window is trimmed.
+- **Maintained overnight.** A nightly job consolidates and cross-links notes,
+  and a weekly job checks for contradictions, stale claims and broken links.
+
+The memory layer is the
+[obsidian-second-brain](https://github.com/eugeniughelbur/obsidian-second-brain)
+skill, run as shipped. What this repo adds is the multi-agent hosting around
+it:
+
+- **Isolation by the filesystem.** Each agent's folder is mode 0700 and owned by
+  that agent's unix user. An agent cannot read another agent's memory, whatever
+  its instructions say.
+- **Sync and history.** Obsidian Sync runs as root on the parent folder; a
+  once-a-minute housekeeping timer hands files back to their owners and commits
+  the tree to local git history (`tools/hive-memory-housekeeping`).
+- **Local scheduling.** The skill's scheduled jobs are designed for a cloud
+  scheduler that cannot see a local vault, so they run here as systemd timer
+  templates, one instance per agent, via headless `claude -p`
   (`tools/hive-vault-job`).
-- After each run the job publishes a retained status to
-  `hive/status/vault-health/<agent>`. Sunday cannot read the other folders, so
-  she reports every vault's health in the morning briefing from those topics.
+- **Health reporting without shared access.** After each run the job publishes
+  a retained status to `hive/status/vault-health/<agent>` over MQTT. Sunday
+  cannot read the other folders, so she reports every vault's health in the
+  morning briefing from those topics.
 
 ### Trust model
 
@@ -191,9 +244,11 @@ tools/
 
 ## Design decisions
 
-- **One VM, many users, no containers.** Agents are isolated by unix user,
-  filesystem permissions and Vault policy. That is enough isolation for a
-  single-operator fleet and keeps debugging to `systemctl` and `journalctl`.
+- **One VM, many agents, no containers.** Several agents share one VM, isolated
+  by unix user, filesystem permissions and Vault policy. That is enough
+  isolation for a single-operator fleet and keeps debugging to `systemctl` and
+  `journalctl`. Adding an agent is a user, a Vault role and a unit
+  (`tools/hive-agent-setup`).
 - **Restart is the deploy.** Config changes only through a reviewed PR and only
   takes effect on restart, so what is running is always a reviewed commit.
 - **Narrow agents over one generalist.** Each agent has a small toolset and an
@@ -207,6 +262,5 @@ tools/
 
 ## Status
 
-In daily use. This public repository is a snapshot of the private operating
-repository with personal details removed; paths and placeholders are kept so
-the scripts still read as they run.
+In daily use. Paths and placeholders are kept so the scripts still read as they
+run against the private repository.
