@@ -111,6 +111,24 @@ Start-up sequence (`tools/agent-start`):
    agent definition, settings, hooks and skills into `~/.claude`.
 3. Claude Code starts with the agent definition, MCP servers and channels.
 
+### Connectors and tools
+
+Every agent logs in to the same Claude account, so every agent inherits that
+account's cloud connectors with no per-host setup: Notion, Gmail, Google
+Calendar and Drive, Linear, Cloudflare, Home Assistant, Garmin and anything
+else connected to the account. Authentication lives in Claude's cloud, not on
+the VM, so there are no OAuth tokens on disk to manage or rotate, and adding a
+connector once makes it available to the whole fleet.
+
+Local MCP servers cover what the cloud cannot reach: the MQTT bus, the Home
+Assistant voice endpoint, the TP-Link Omada network controller, and
+`sinclair-gws` for Google Workspace writes under a fixed identity.
+
+The trade-off is that connector scope is shared. Which agent uses which
+connector is set by each agent's instructions; where that is not strong
+enough, the capability moves into a local MCP server whose shape enforces it
+(see `sinclair-gws`).
+
 ### Config as code
 
 Git is the source of truth for every agent's behaviour. The pull is an
